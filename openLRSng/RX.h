@@ -265,7 +265,12 @@ ISR(TIMER1_OVF_vect)
   if (ppmCountter < ppmChannels) {
     ICR1 = nextICR1;
     nextICR1 = servoBits2Us(PPM[ppmCountter]) * PWM_MULTIPLIER;
-    ppmSync -= nextICR1;
+    // Guard against underflow when the channel pulses exceed the frame length
+    if (ppmSync > nextICR1) {
+      ppmSync -= nextICR1;
+    } else {
+      ppmSync = 0;
+    }
     if (ppmSync < (rx_config.minsync * PWM_MULTIPLIER)) {
       ppmSync = rx_config.minsync * PWM_MULTIPLIER;
     }
@@ -320,10 +325,12 @@ ISR(TIMER1_OVF_vect)
 void loop(void)
 {
   watchdogReset();
+
+  // Service a received packet first so servo/serial outputs see minimal latency
+  handlePacketRX();
+
   check_module();
   checkSerial();
-
-  handlePacketRX();
 
   timeUs = micros();
   timeMs = millis();
@@ -374,7 +381,15 @@ retry:
 #endif
 
   if ((RF_Mode == RECEIVED) || (slaveReceived)) {
-    uint32_t timeTemp = micros();
+    uint32_t timeTemp;
+    if (RF_Mode == RECEIVED) {
+      // Use the ISR arrival stamp (immune to main-loop scheduling jitter)
+      cli();
+      timeTemp = lastReceivedUs;
+      sei();
+    } else {
+      timeTemp = micros();
+    }
 #ifdef ENABLE_SLAVE_MODE
     if (RF_Mode != RECEIVED) {
       uint8_t ret;
@@ -426,6 +441,12 @@ retry:
       disablePWM = 0;
       disablePPM = 0;
 
+      updateSwitches();
+
+      // Push fresh channel data to serial RC outputs before the (blocking)
+      // telemetry transmit so S.BUS/SUMD/Spektrum latency is not inflated by it
+      updateSerialRC();
+
       if (bind_data.flags & TELEMETRY_MASK) {
         handlePacketTelem();
       }
@@ -436,7 +457,6 @@ retry:
       }
 #endif
 
-      updateSwitches();
       willhop = 1;
       rx_reset();
       Green_LED_OFF;
@@ -450,8 +470,19 @@ retry:
 void processPacketRC(void)
 {
   // process RC data packet
+  // Unpack with interrupts enabled into a scratch buffer, then copy under a
+  // short critical section. Keeps the PPM/PWM timer ISR latency (and thus
+  // output jitter) bounded by a ~5us copy instead of the full unpack.
+  uint16_t ppmTmp[PPM_CHANNELS];
+  uint8_t i;
+  for (i = 0; i < PPM_CHANNELS; i++) {
+    ppmTmp[i] = PPM[i];
+  }
+  unpackChannels(bind_data.flags & 7, ppmTmp, rx_buf + 1);
   cli();
-  unpackChannels(bind_data.flags & 7, PPM, rx_buf + 1);
+  for (i = 0; i < PPM_CHANNELS; i++) {
+    PPM[i] = ppmTmp[i];
+  }
   set_PPM_rssi();
   sei();
 #ifdef DEBUG_DUMP_PPM
@@ -621,18 +652,21 @@ void updateSwitches(void)
 
 void failsafeApply(void)
 {
+  // RSSI injection channels are only reserved when injection is enabled (<63)
+  uint8_t rssiCh = (rx_config.RSSIpwm < 63) ? (rx_config.RSSIpwm & 0x0f) : 0xff;
+  uint8_t rssiCh2 = ((rx_config.RSSIpwm > 47) && (rx_config.RSSIpwm < 63)) ? (rssiCh + 1) : 0xff;
   for (uint8_t i = 0; i < PPM_CHANNELS; i++) {
-    if ((i == (rx_config.RSSIpwm & 0x0f)) ||
-        ((i == (rx_config.RSSIpwm & 0x0f) + 1) && (rx_config.RSSIpwm > 47))) {
+    if ((i == rssiCh) || (i == rssiCh2)) {
       continue;
     }
     if (failsafePPM[i] & 0xfff) {
+      uint16_t v = servoUs2Bits(failsafePPM[i] & 0xfff);
       cli();
-      PPM[i] = servoUs2Bits(failsafePPM[i] & 0xfff);
+      PPM[i] = v;
       sei();
     }
-    updateSwitches();
   }
+  updateSwitches();
 }
 
 void setupOutputs(void)
@@ -872,18 +906,28 @@ void updateHopChannel(void)
   }
 }
 
+// Largest payload exchanged during bind: bind_data, rx_config, failsafePPM or
+// version+pin info, each prefixed by a one byte command.
+#define BIND_BUF_MAX(a, b) ((a) > (b) ? (a) : (b))
+#define BIND_RXC_BUFSIZE (BIND_BUF_MAX(BIND_BUF_MAX(sizeof(bind_data), sizeof(rx_config)), \
+                          BIND_BUF_MAX(sizeof(failsafePPM), sizeof(rxSpecialPins) + 4)) + 1)
+
 uint8_t bindReceive(uint32_t timeout)
 {
   uint32_t start = millis();
-  uint8_t rxc_buf[33];
+  uint8_t rxc_buf[BIND_RXC_BUFSIZE];
   uint8_t len;
   init_rfm(1);
   rx_reset();
   Serial.println("Waiting bind\n");
   while ((!timeout) || ((millis() - start) < timeout)) {
+    watchdogReset();
     if (RF_Mode == RECEIVED) {
       Serial.println("Got pkt");
       len=rfmGetPacketLength();
+      if (len > sizeof(rxc_buf)) {
+        len = sizeof(rxc_buf);
+      }
       rfmGetPacket(rxc_buf, len);
       switch((char) rxc_buf[0]) {
       case 'b': { // GET bind_data

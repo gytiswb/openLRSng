@@ -53,7 +53,7 @@ void myI2C_init(uint8_t enablePullup)
   myI2C_dataCnt=0;
   myI2C_flags=0;
 
-  TWSR |= ~(_BV(TWPS0)|_BV(TWPS1));
+  TWSR &= ~(_BV(TWPS0)|_BV(TWPS1)); // prescaler = 1
   TWBR = ((F_CPU / I2C_FREQ) - 16) / 2;
 
   TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWEA);

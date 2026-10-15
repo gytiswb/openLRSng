@@ -28,7 +28,11 @@ uint8_t rxcConnect()
     return 2; // timeout
   }
 
-  rfmGetPacket(tx_buf, rfmGetPacketLength());
+  uint8_t len = rfmGetPacketLength();
+  if (len > sizeof(tx_buf)) {
+    len = sizeof(tx_buf);
+  }
+  rfmGetPacket(tx_buf, len);
 
   if (tx_buf[0] != 'T') {
     return 3; // error, bad data

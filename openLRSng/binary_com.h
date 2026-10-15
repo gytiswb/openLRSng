@@ -167,6 +167,8 @@ void PSP_read(void)
         PSP_protocol_tail();
 
         state = 0; // Restart
+      } else if (payload_length_expected == 0) {
+        state = 6; // no payload, next byte is the CRC
       }
       break;
     case 5:
@@ -206,6 +208,7 @@ void binaryMode()
   binary_mode_active = true;
 
   while (binary_mode_active == true) { // LOCK user here until exit command is received
+    watchdogReset();
     if (Serial.available()) {
       PSP_read();
     }
@@ -439,8 +442,8 @@ void PSP_process_data(uint8_t code, uint16_t payload_length_received, uint8_t da
       delay(1100);
 
       if (RF_Mode == RECEIVED) {
-        rfmGetPacket(tx_buf, 1);
-        if (tx_buf[0] == 'G') {
+        rfmGetPacket(rxtx_buf, 1);
+        if (rxtx_buf[0] == 'G') {
           PSP_serialize_uint8(0x01);
         } else {
           PSP_serialize_uint8(0x00);

@@ -39,6 +39,7 @@ uint32_t getInterval(struct bind_data *bd);
 uint32_t tx_start = 0;
 volatile uint8_t RF_Mode = 0;
 volatile uint32_t lastReceived = 0;
+volatile uint32_t lastReceivedUs = 0; // micros() stamp taken in the RFM ISR
 volatile uint16_t PPM[PPM_CHANNELS] = { 512, 512, 512, 512, 512, 512, 512, 512 , 512, 512, 512, 512, 512, 512, 512, 512 };
 const static uint8_t pktsizes[8] = { 0, 7, 11, 12, 16, 17, 21, 0 };
 
@@ -47,8 +48,10 @@ void RFM22B_Int()
   if (RF_Mode == TRANSMIT) {
     RF_Mode = TRANSMITTED;
   } else if (RF_Mode == RECEIVE) {
-    RF_Mode = RECEIVED;
+    // Stamp arrival in the ISR so hop timing does not inherit main-loop latency
+    lastReceivedUs = micros();
     lastReceived = millis();
+    RF_Mode = RECEIVED;
   }
 }
 
@@ -334,6 +337,7 @@ void scannerMode(void)
   rx_reset();
 
   while (startFreq != 1000) { // if startFreq == 1000, break (used to exit scannerMode)
+    watchdogReset();
     while (Serial.available()) {
       c = Serial.read();
 

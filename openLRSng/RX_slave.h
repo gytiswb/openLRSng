@@ -109,7 +109,8 @@ void slaveLoop(void)
       slaveState = 4; // in RX mode
     } else if (slaveState == 4) {
       if (RF_Mode == RECEIVED) {
-        rfmGetPacket(rx_buf, sizeof(bind_data));
+        // rx_buf holds a single RC packet, never a bind_data struct
+        rfmGetPacket(rx_buf, getPacketSize(&bind_data));
         slaveState = 5;
         Green_LED_ON;
       }

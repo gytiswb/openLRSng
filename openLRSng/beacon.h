@@ -5,6 +5,17 @@ uint8_t beaconGetRSSI(void);
 void beacon_tone(int16_t hz, int16_t len);
 void beacon_send(bool static_tone);
 
+static inline void beacon_delay_us(uint32_t us)
+{
+  while (us > 10000) {
+    delayMicroseconds(10000);
+    us -= 10000;
+  }
+  if (us) {
+    delayMicroseconds((uint16_t)us);
+  }
+}
+
 uint8_t beaconGetRSSI(void)
 {
   uint16_t rssiSUM = 0;
@@ -28,20 +39,22 @@ uint8_t beaconGetRSSI(void)
 
 void beacon_tone(int16_t hz, int16_t len)
 {
-  //duration is now in half seconds.
-  int16_t d = 500000 / hz; // better resolution
+  // len is in half seconds. Use 32 bit math: 500000/hz overflows int16 for
+  // low tones (e.g. the 10Hz squelch breaker) and delayMicroseconds() is only
+  // accurate up to ~16ms, so long half-periods are split into chunks.
+  uint32_t d = 500000UL / (uint32_t)hz; // half period in us
 
   if (d < 1) {
     d = 1;
   }
 
-  int16_t cycles = (len * 500000 / d) >> 1;
+  uint32_t cycles = ((uint32_t)len * 500000UL / d) >> 1;
 
-  for (int16_t i = 0; i < cycles; i++) {
+  for (uint32_t i = 0; i < cycles; i++) {
     SDI_on;
-    delayMicroseconds(d);
+    beacon_delay_us(d);
     SDI_off;
-    delayMicroseconds(d);
+    beacon_delay_us(d);
   }
 }
 

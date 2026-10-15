@@ -16,6 +16,7 @@ uint8_t FSstate = 0; // 1 = waiting timer, 2 = send FS, 3 sent waiting btn relea
 uint32_t FStime = 0;  // time when button went down...
 
 uint32_t lastSent = 0;
+uint32_t txInterval = 20000; // cached getInterval(&bind_data), refreshed in configureProfile()
 
 uint32_t lastTelemetry = 0;
 uint32_t lastSerialPPM = 0;
@@ -276,7 +277,7 @@ void bindMode(void)
   Red_LED_OFF;
 
   while (bndMode || !(serialMode == SERIAL_MODE_MULTI && !multiBind)) {
-    if (sendBinds & (millis() - prevsend > 200)) {
+    if (sendBinds && (millis() - prevsend > 200)) {
       prevsend = millis();
       Green_LED_ON;
       buzzerOn(BZ_FREQ);
@@ -545,6 +546,9 @@ void configureProfile(void)
   setHopChannel(RF_channel);
   rx_reset();
 
+  txInterval = getInterval(&bind_data);
+  lastSent = micros();
+
   watchdogConfig(WATCHDOG_2S);
 }
 
@@ -674,13 +678,16 @@ static inline void processSpektrum(uint8_t c)
     ppmWork.bytes[frameIndex++] = c;
     if (frameIndex==16) { // frameComplete
       for (uint8_t i=1; i<8; i++) {
-        uint8_t ch,v;
+        uint8_t ch;
+        uint16_t v;
+        // Spektrum servo fields are big-endian 16 bit words
+        uint16_t word = ((uint16_t)ppmWork.bytes[i * 2] << 8) | ppmWork.bytes[i * 2 + 1];
         if (serialMode == SERIAL_MODE_SPEKTRUM1024) {
-          ch = ppmWork.words[i] >> 10;
-          v = ppmWork.words[i] & 0x3ff;
+          ch = word >> 10;
+          v = word & 0x3ff;
         } else {
-          ch = ppmWork.words[i] >> 11;
-          v = (ppmWork.words[i] & 0x7ff)>>1;
+          ch = word >> 11;
+          v = (word & 0x7ff) >> 1;
         }
         if (ch < 16) {
           PPM[ch] = v;
@@ -1027,8 +1034,13 @@ void loop(void)
     sampleRSSI = 0;
   }
 
-  if ((time - lastSent) >= getInterval(&bind_data)) {
-    lastSent = time;
+  if ((time - lastSent) >= txInterval) {
+    // Advance by a fixed step so loop latency does not accumulate into the
+    // packet cadence; resync only if we have fallen a whole interval behind.
+    lastSent += txInterval;
+    if ((time - lastSent) >= txInterval) {
+      lastSent = time;
+    }
 
     watchdogReset();
 
@@ -1037,10 +1049,15 @@ void loop(void)
 #endif
 
     if ((ppmAge < 8) || (!TX_CONFIG_GETMINCH())) {
-      ppmAge++;
+      // ppmAge is zeroed from the PPM ISR; make the increment atomic
+      cli();
+      if (ppmAge < 255) {
+        ppmAge++;
+      }
+      sei();
 
       if (lastTelemetry) {
-        if ((time - lastTelemetry) > getInterval(&bind_data)) {
+        if ((time - lastTelemetry) > txInterval) {
           // telemetry lost
           if (!(tx_config.flags & MUTE_TX)) {
             buzzerOn(BZ_FREQ);

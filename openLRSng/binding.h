@@ -186,10 +186,10 @@ void fatalBlink(uint8_t blinks);
 void myEEPROMwrite(int16_t addr, uint8_t data)
 {
   uint8_t retries = 5;
-  while ((--retries) && (data != eeprom_read_byte((uint8_t *)addr))) {
+  while (retries-- && (data != eeprom_read_byte((uint8_t *)addr))) {
     eeprom_write_byte((uint8_t *)addr, data);
   }
-  if (!retries) {
+  if (data != eeprom_read_byte((uint8_t *)addr)) {
     fatalBlink(2);
   }
 }
@@ -380,7 +380,7 @@ void bindRandomize(bool randomChannels)
 
   bind_data.rf_magic = 0;
   for (c = 0; c < 4; c++) {
-    bind_data.rf_magic = (bind_data.rf_magic << 8) + (random() % 255);
+    bind_data.rf_magic = (bind_data.rf_magic << 8) + (random() & 0xff);
   }
 
   if (randomChannels) {

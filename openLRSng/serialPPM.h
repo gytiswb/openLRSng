@@ -44,7 +44,14 @@ void sendSUMDFrame(uint8_t failsafe);
 uint16_t PPMtoSBUS(uint16_t input)
 {
   uint16_t value = servoBits2Us(input);
+  // S.BUS 11 bit range (0..2047) spans 880..2159us; clamp to avoid wrap-around
+  if (value < 880) {
+    return 0;
+  }
   value = (((value - 880) << 3) / 5);
+  if (value > 2047) {
+    value = 2047;
+  }
   return value;
 }
 
